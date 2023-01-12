@@ -1,5 +1,5 @@
 import json
-
+from threading import RLock
 from kubernetes import client, config
 from kubernetes.client import V1ObjectMeta, V1PodList
 
@@ -7,7 +7,6 @@ import boto3
 from kubernetes.client.models.v1_config_map import  V1ConfigMap
 import requests
 import os
-import threading
 
 DEFAULT_PLATFORM_NS = 'domino-platform'
 DEFAULT_COMPUTE_NS = 'domino-compute'
@@ -18,6 +17,7 @@ CONFIG_MAP_RESOURCE_ROLE_TO_EKS_ROLE_MAPPING = 'resource-role-to-eks-role-mappin
 class AWSUtils:
     def __init__(self,logger):
         try:
+            self.lock = RLock()
             self._iam = boto3.client('iam')
             self._logger = logger
             self._all_running_svc_accounts = []
@@ -171,7 +171,7 @@ class AWSUtils:
                 if (not self._is_service_account_mapped(trust_policy,service_account,oidc_provider)):
                     if type(trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"])==str:
                         v = trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
-                        if v in self._all_running_svc_accounts:
+                        if v[1:] in self._all_running_svc_accounts:
                             lst = [v,service_account]
                         else:
                             lst = [service_account]
@@ -217,10 +217,3 @@ class AWSUtils:
 
 
 
-    def get_user_id(self,headers):
-        domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
-        resp = requests.get(f'{domino_host}/v4/auth/principal',
-                            headers=headers)
-
-        if (resp.status_code == 200):
-            return resp.js
