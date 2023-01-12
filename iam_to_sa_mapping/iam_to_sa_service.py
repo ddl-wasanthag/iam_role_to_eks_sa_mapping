@@ -13,12 +13,9 @@ OIDC_PROVIDER_AUDIENCE = os.environ.get('OIDC_PROVIDER_AUDIENCE')
 logger = logging.getLogger("iamroletosamapping")
 app = Flask(__name__)
 
-aws_utils:AWSUtils = AWSUtils()
-
+aws_utils:AWSUtils = AWSUtils(logger)
 
 def get_domino_api_headers( headers):
-    logging.debug(headers)
-    logging.debug('XXXXXX')
     new_headers = {}
     if ('Authorization' in headers):
         new_headers['Authorization'] = headers['Authorization']

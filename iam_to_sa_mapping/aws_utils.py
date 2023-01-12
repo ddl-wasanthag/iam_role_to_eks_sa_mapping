@@ -1,23 +1,26 @@
 import json
-import logging
+
 from kubernetes import client, config
 from kubernetes.client import V1ObjectMeta, V1PodList
-from kubernetes.client.models.v1_service_account import V1ServiceAccount
+
 import boto3
 from kubernetes.client.models.v1_config_map import  V1ConfigMap
 import requests
 import os
+import threading
 
 DEFAULT_PLATFORM_NS = 'domino-platform'
 DEFAULT_COMPUTE_NS = 'domino-compute'
 CONFIG_MAP_ORG_TO_IAMROLE_MAPPING = 'domino-org-iamrole-mapping'
 CONFIG_MAP_RESOURCE_ROLE_TO_EKS_ROLE_MAPPING = 'resource-role-to-eks-role-mapping'
 
-logger = logging.getLogger("iamroletosamapping")
+
 class AWSUtils:
-    def __init__(self):
+    def __init__(self,logger):
         try:
             self._iam = boto3.client('iam')
+            self._logger = logger
+            self._all_running_svc_accounts = []
             config.load_incluster_config()
         except:
             print("Loading local k8s config")
@@ -43,7 +46,6 @@ class AWSUtils:
     def get_role_arn_by_role_name_map(self,role_arns):
         rolearns_by_name = {}
         for arn in role_arns:
-            print(arn)
             role_name = arn[arn.index("/")+1:]
             rolearns_by_name[role_name] = arn
         return rolearns_by_name
@@ -64,8 +66,7 @@ class AWSUtils:
         resource_version = int(metadata.resource_version)
         metadata.resource_version = str(resource_version + 1)
         '''
-        logging.debug('About to patch ' + config_map_name)
-        print(config_map_body)
+
         v1.patch_namespaced_config_map(config_map_name,
                                        namespace, config_map_body)
 
@@ -98,21 +99,18 @@ class AWSUtils:
     def get_user_id(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
 
+        endpoint = f'{domino_host}/v4/auth/principal'
 
-        resp = requests.get(f'{domino_host}/v4/auth/principal',
-                            headers=headers)
-        logging.debug(headers)
-        logging.debug(resp)
+        resp = requests.get(endpoint,headers=headers)
+
         if (resp.status_code == 200):
             return resp.json()['canonicalId']
 
     def get_user_orgs(self,headers):
-        print('TTTTTTTTTT')
+
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
 
         url = f'{domino_host}/v4/organizations/self'
-        print(url)
-        print(headers)
         resp = requests.get(url,
                             headers=headers)
         lst = []
@@ -120,7 +118,7 @@ class AWSUtils:
         if (resp.status_code == 200):
             for org in resp.json():
                 lst.append(org['name'])
-        print(lst)
+
         return lst
 
     def get_user_roles(self,headers):
@@ -153,35 +151,48 @@ class AWSUtils:
         print(trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"])
         return service_account in trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
 
+
+
     def map_iam_roles_to_pod(self,platform_ns,oidc_provier_arn,role_names,pod_svc_account):
         #service_account = f"*:{compute_ns}:{pod_svc_account}"
-        service_account = '*'+pod_svc_account[4:]
-        logging.debug(pod_svc_account)
-        resource_role_to_eks_role_mapping = self.get_resource_role_to_eks_role_mapping(platform_ns)
-        for role_name in role_names:
-            eks_arn = resource_role_to_eks_role_mapping[role_name]
-            eks_role_name = eks_arn[eks_arn.index("/")+1:]
+        with self.lock:
+            service_account = '*'+pod_svc_account[4:]
 
-            response = self._iam.get_role(RoleName=eks_role_name)
-            trust_policy = response['Role']['AssumeRolePolicyDocument']
-            oidc_provider = oidc_provier_arn[oidc_provier_arn.index("/") + 1:]
+            resource_role_to_eks_role_mapping = self.get_resource_role_to_eks_role_mapping(platform_ns)
+            for role_name in role_names:
+                eks_arn = resource_role_to_eks_role_mapping[role_name]
+                eks_role_name = eks_arn[eks_arn.index("/")+1:]
 
+                response = self._iam.get_role(RoleName=eks_role_name)
+                trust_policy = response['Role']['AssumeRolePolicyDocument']
 
-            if (not self._is_service_account_mapped(trust_policy,service_account,oidc_provider)):
-                if type(trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"])==str:
-                    v = trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
-                    lst = [v,service_account]
-                    trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"] = lst
+                oidc_provider = oidc_provier_arn
+
+                if (not self._is_service_account_mapped(trust_policy,service_account,oidc_provider)):
+                    if type(trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"])==str:
+                        v = trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
+                        if v in self._all_running_svc_accounts:
+                            lst = [v,service_account]
+                        else:
+                            lst = [service_account]
+
+                        trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"] = lst
+                    else:
+                        sub_list = trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
+                        new_sub_list = []
+                        new_sub_list .append(service_account)
+                        for s in sub_list:
+                            if s[1:] in self._all_running_svc_accounts:
+                                new_sub_list.append(s)
+                        trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"] = new_sub_list
+
+                    self._iam.update_assume_role_policy(RoleName=eks_role_name,PolicyDocument=json.dumps(trust_policy))
                 else:
-                    trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"].append(service_account)
+                    print('already there')
 
-                self._iam.update_assume_role_policy(RoleName=eks_role_name,PolicyDocument=json.dumps(trust_policy))
-            else:
-                print('already there')
     def get_pod_service_account(self,headers, run_id, pod_namespace=DEFAULT_COMPUTE_NS):
-        logger.debug(headers)
-        logger.debug(run_id)
         user_id = self.get_user_id(headers)
+        self._all_running_svc_accounts = []
         try:
             config.load_incluster_config()
         except:
@@ -194,7 +205,8 @@ class AWSUtils:
             pod: V1PodList = p
             m: V1ObjectMeta = pod.metadata
             metadata = m.to_dict()
-
+            if pod.status.phase.lower()=='running':
+                self._all_running_svc_accounts.append(pod.spec.service_account[4:])
             if metadata['labels'] and 'dominodatalab.com/execution-id' in metadata['labels'].keys():
                 execution_id = metadata['labels']['dominodatalab.com/execution-id']
                 if execution_id == run_id:
@@ -203,10 +215,12 @@ class AWSUtils:
                         return p.spec.service_account
         return None
 
+
+
     def get_user_id(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
         resp = requests.get(f'{domino_host}/v4/auth/principal',
                             headers=headers)
-        if (resp.status_code == 200):
-            return resp.json()['canonicalId']
 
+        if (resp.status_code == 200):
+            return resp.js

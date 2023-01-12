@@ -25,7 +25,6 @@ if __name__ == "__main__":
     aws_web_identity_token_file = root + os.environ['AWS_WEB_IDENTITY_TOKEN_FILE']
     service_endpoint = os.environ['IAM_SA_MAPPING_ENDPOINT']
     pod_info = root + os.environ['POD_INFO_PATH']
-
     configs = Properties()
 
     logger.debug(aws_config_file)
@@ -44,10 +43,11 @@ if __name__ == "__main__":
             with open(domino_token_file, "r") as f:
                 # Writing data to a file
                 token = f.read()
-
+            run_id = configs.get('app.kubernetes.io/name').data.strip("\"").strip("run-")
             data = {
-                "run_id": configs.get('app.kubernetes.io/name')
+                "run_id": run_id
             }
+
             headers = {"Content-Type": "application/json",
                        "Authorization": "Bearer " + token
                        }
@@ -55,6 +55,8 @@ if __name__ == "__main__":
             resp = requests.post(service_endpoint, headers=headers, json=data)
             # Writing to file
             logger.debug(resp.status_code)
+            logger.debug(resp.content)
+            logger.debug(resp.text)
             if(resp.status_code==200):
                 with open(os.environ['AWS_CONFIG_FILE'], "w") as f:
                     # Writing data to a file
@@ -65,8 +67,8 @@ if __name__ == "__main__":
         except:
             # printing stack trace
             traceback.print_exc()
-        logger.debug('Sleeping for 15 seconds')
-        time.sleep(15)
+        logger.debug('Sleeping for 5 seconds')
+        time.sleep(5)
         #If fails, retry every 30 seconds
     while(True):
         logger.debug('Wait forever by waking up every 5 mins and then going back to sleep')

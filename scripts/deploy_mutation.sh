@@ -65,7 +65,6 @@ rules:
     volumeMounts:
     - name: aws-config-file
       mountPath: /var/run/.aws
-      readOnly: true
     - name: aws-user-token
       mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount/
       readOnly: true
