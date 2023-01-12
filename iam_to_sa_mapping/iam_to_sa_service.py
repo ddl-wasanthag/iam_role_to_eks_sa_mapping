@@ -15,19 +15,31 @@ app = Flask(__name__)
 
 aws_utils:AWSUtils = AWSUtils()
 
+
+def get_domino_api_headers( headers):
+    logging.debug(headers)
+    logging.debug('XXXXXX')
+    new_headers = {}
+    if ('Authorization' in headers):
+        new_headers['Authorization'] = headers['Authorization']
+    elif ('X-Domino-Api-Key' in headers):
+        new_headers['X-Domino-Api-Key'] = headers['X-Domino-Api-Key']
+    return new_headers
+
+
 #This implementation should be in a separate micro-service unique for each customer
 #Default depends on org to roles mapping
 @app.route("/get_my_roles", methods=["GET"])
 def get_my_roles() -> tuple:
+    headers = get_domino_api_headers(request.headers)
     platform_ns = os.environ.get('DEFAULT_PLATFORM_NS', DEFAULT_PLATFORM_NS)
-    domino_api_key = request.headers["X-Domino-Api-Key"]
-    return {'result':aws_utils.get_domino_users_iamroles(platform_ns,domino_api_key)}
+    return {'result':aws_utils.get_domino_users_iamroles(platform_ns,headers)}
 
 
 @app.route("/map_org_to_iam_role", methods=["POST"])
 def map_org_to_iam_role() -> object:
-    domino_api_key = request.headers["X-Domino-Api-Key"]
-    is_caller_admin = aws_utils.is_user_admin(domino_api_key)
+    headers = get_domino_api_headers(request.headers)
+    is_caller_admin = aws_utils.is_user_admin(get_domino_api_headers(headers))
     payload = request.json
     if not is_caller_admin:
         return Response(
@@ -57,23 +69,24 @@ def map_iam_roles_to_aws_sa() -> list:
         Returns:
                list(str): List of fully qualified iam roles the user can assume
         '''
-    domino_api_key = request.headers["X-Domino-Api-Key"]
+
+    headers = get_domino_api_headers(request.headers)
     payload = request.json
     run_id = payload['run_id']
 
 
-    pod_svc_account = aws_utils.get_pod_service_account(domino_api_key,run_id,COMPUTE_NS)
+    pod_svc_account = aws_utils.get_pod_service_account(headers,run_id,COMPUTE_NS)
     if not pod_svc_account:
         return Response(
             str(f"No Pod Found with the run id {run_id} for the user"),
             404)
-    aws_resource_roles:dict = aws_utils.get_domino_users_iamroles(PLATFORM_NS,domino_api_key)
+    aws_resource_roles:dict = aws_utils.get_domino_users_iamroles(PLATFORM_NS,headers)
 
     resource_role_to_eks_role_mapping = aws_utils.get_resource_role_to_eks_role_mapping(PLATFORM_NS)
     aws_resource_roles_by_name = aws_utils.get_role_arn_by_role_name_map(aws_resource_roles.values())
     #Update trust relationship for the the eks role
-    aws_utils.map_iam_roles_to_pod(PLATFORM_NS,COMPUTE_NS,OIDC_PROVIDER,
-                                   OIDC_PROVIDER_AUDIENCE,aws_resource_roles_by_name,pod_svc_account)
+    aws_utils.map_iam_roles_to_pod(PLATFORM_NS,OIDC_PROVIDER,
+                                   aws_resource_roles_by_name,pod_svc_account)
 
     aws_config_file = ''
 
@@ -85,7 +98,6 @@ def map_iam_roles_to_aws_sa() -> list:
         aws_config_file = aws_config_file + f"[profile src_{role}]\n"
         aws_config_file = aws_config_file + f"web_identity_token_file = /var/run/secrets/eks.amazonaws.com/serviceaccount/token\n"
         aws_config_file = aws_config_file + f"role_arn={resource_role_to_eks_role_mapping[role]}\n"
-
     return aws_config_file
 
 @app.route("/healthz")

@@ -1,6 +1,7 @@
 platform_namespace="${platform_namespace:-domino-platform}"
 asset_aws_account=$1
 eks_aws_account=$2
+role_prefix=$3
 
 kubectl delete configmap domino-org-iamrole-mapping -n ${platform_namespace}
 cat <<EOF | kubectl create -n ${platform_namespace} -f -
@@ -9,9 +10,9 @@ kind: ConfigMap
 metadata:
   name: domino-org-iamrole-mapping
 data: {
-    "iamrole-list-bucket":"arn:aws:iam::${asset_aws_account}:role/list-bucket-role",
-    "iamrole-read-bucket":"arn:aws:iam::${asset_aws_account}:role/read-bucket-role",
-    "iamrole-update-bucket":"arn:aws:iam::${asset_aws_account}:role/update-bucket-role"
+    "iamrole-list-bucket":"arn:aws:iam::${asset_aws_account}:role/${role_prefix}list-bucket-role",
+    "iamrole-read-bucket":"arn:aws:iam::${asset_aws_account}:role/${role_prefix}read-bucket-role",
+    "iamrole-update-bucket":"arn:aws:iam::${asset_aws_account}:role/${role_prefix}update-bucket-role"
   }
 EOF
 
@@ -22,8 +23,8 @@ kind: ConfigMap
 metadata:
   name: resource-role-to-eks-role-mapping
 data: {
-  "list-bucket-role":"arn:aws:iam::${eks_aws_account}:role/list-bucket-role",
-  "read-bucket-role":"arn:aws:iam::${eks_aws_account}:role/read-bucket-role",
-  "update-bucket-role":"arn:aws:iam::${eks_aws_account}:role/update-bucket-role"
+  "${role_prefix}list-bucket-role":"arn:aws:iam::${eks_aws_account}:role/${role_prefix}list-bucket-role",
+  "${role_prefix}read-bucket-role":"arn:aws:iam::${eks_aws_account}:role/${role_prefix}read-bucket-role",
+  "${role_prefix}update-bucket-role":"arn:aws:iam::${eks_aws_account}:role/${role_prefix}update-bucket-role"
 }
 EOF

@@ -137,9 +137,7 @@ rules:
   insertContainer:
     containerType: app
     spec:
-      command: [ "/bin/sh", "-c", "--" ]  
-      args: [ "while true; do sleep 30; done;" ]
-      image: busybox
+      image: quay.io/domino/iam-sa-client:latest
       name: aws-config-file-generator
 - labelSelectors:
   - "dominodatalab.com/workload-type in (Workspace,Job)"
@@ -152,12 +150,21 @@ rules:
     - name: jwt-secret-vol 
       mountPath: /var/lib/domino/home/.api
       readOnly: true
+    - name: podinfo
+      mountPath: /var/run/podinfo
+      readOnly: true
 - labelSelectors:
   - "dominodatalab.com/workload-type in (Workspace,Job)"
   insertVolumes:
   - name: aws-config-file
     emptyDir:
       sizeLimit: 500Mi
+  - name: podinfo
+    downwardAPI:
+      items:
+        - path: "labels"
+          fieldRef:
+            fieldPath: metadata.labels
   - name: aws-user-token
     projected:
       defaultMode: 422
@@ -171,23 +178,47 @@ rules:
   insertVolumeMounts:
     containerSelector:
     - run
+    - app
     volumeMounts:
     - name: aws-config-file
       mountPath: /var/run/.aws
       readOnly: true
     - name: aws-user-token
       mountPath: /var/run/secrets/eks.amazonaws.com/serviceaccount/
+      readOnly: true
+
+- labelSelectors:
+  - "dominodatalab.com/workload-type in (Workspace,Job)"
+  insertVolumeMounts:
+    containerSelector:
+    - app
+    volumeMounts:
+    - name: aws-config-file
+      mountPath: /var/run/.aws
+      
       
 - labelSelectors:
   - "dominodatalab.com/workload-type in (Workspace,Job)"
   modifyEnv:
     containerSelector:
+    - app
+    env:
+    - name: POD_INFO_PATH
+      value: /var/run/podinfo/labels
+
+- labelSelectors:
+  - "dominodatalab.com/workload-type in (Workspace,Job)"
+  modifyEnv:
+    containerSelector:
     - run
+    - app
     env:
     - name: AWS_WEB_IDENTITY_TOKEN_FILE
       value: /var/run/secrets/eks.amazonaws.com/serviceaccount/token
     - name: AWS_CONFIG_FILE
       value: /var/run/.aws/config
+    - name: IAM_SA_MAPPING_ENDPOINT
+      value: http://iam-sa-mapping-svc.domino-platform/map_iam_role_to_pod_sa
 ```
 The key feature of K8s which enables this capability is the concept of [service account token volume projection](https://kubernetes.io/docs/tasks/configure-pod-container/configure-service-account/#serviceaccount-token-volume-projection)
 The Service Account Token Volume Projection feature of Kubernetes allows projection of time and audience-bound 
@@ -218,6 +249,8 @@ the roles the user can assume by dynamically generated a *aws config* file with 
    - `OIDC_PROVIDER` - ARN of the OIDC Provider. This can be obtained from you EKS cluster definition
    - `OIDC_PROVIDER_AUDIENCE` - We are using STS to generate tokens to allow role access into the asset aws account. We will
      assume this to be `sts.amazonaws.com`
+     
+
      
 5. Next open the script `deploy-add.sh`. This script updates config map which maps the roles in the `asset_aws_account` to the roles
    in the `eks_customer_account`

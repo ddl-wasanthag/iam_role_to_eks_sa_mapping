@@ -1,5 +1,5 @@
 import json
-
+import logging
 from kubernetes import client, config
 from kubernetes.client import V1ObjectMeta, V1PodList
 from kubernetes.client.models.v1_service_account import V1ServiceAccount
@@ -13,7 +13,7 @@ DEFAULT_COMPUTE_NS = 'domino-compute'
 CONFIG_MAP_ORG_TO_IAMROLE_MAPPING = 'domino-org-iamrole-mapping'
 CONFIG_MAP_RESOURCE_ROLE_TO_EKS_ROLE_MAPPING = 'resource-role-to-eks-role-mapping'
 
-
+logger = logging.getLogger("iamroletosamapping")
 class AWSUtils:
     def __init__(self):
         try:
@@ -31,8 +31,8 @@ class AWSUtils:
         return resource_role_to_eks_role_mapping.data
 
 
-    def get_domino_users_iamroles(self,platform_ns: DEFAULT_PLATFORM_NS,domino_api_key):
-        user_orgs = self.get_user_orgs(domino_api_key)
+    def get_domino_users_iamroles(self,platform_ns: DEFAULT_PLATFORM_NS,headers):
+        user_orgs = self.get_user_orgs(headers)
         orgs_to_iam_roles_map = self.get_orgs_iam_roles_mapping(platform_ns)
         my_roles = {}
         for org in user_orgs:
@@ -64,7 +64,7 @@ class AWSUtils:
         resource_version = int(metadata.resource_version)
         metadata.resource_version = str(resource_version + 1)
         '''
-        print('About to patch ' + config_map_name)
+        logging.debug('About to patch ' + config_map_name)
         print(config_map_body)
         v1.patch_namespaced_config_map(config_map_name,
                                        namespace, config_map_body)
@@ -83,7 +83,7 @@ class AWSUtils:
             org_iam_role_mapping.data = {}
 
         old_iam_role = ''
-        print(org_iam_role_mapping.data)
+
         if domino_org in org_iam_role_mapping.data:
             old_iam_role = org_iam_role_mapping.data[domino_org]
 
@@ -95,35 +95,41 @@ class AWSUtils:
         #                 org_iam_role_mapping.data)
         return old_iam_role, iam_role
 
-
-    def get_user_id(self,domino_api_key):
+    def get_user_id(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
+
+
         resp = requests.get(f'{domino_host}/v4/auth/principal',
-                            headers={'X-Domino-Api-Key': domino_api_key})
+                            headers=headers)
+        logging.debug(headers)
+        logging.debug(resp)
         if (resp.status_code == 200):
             return resp.json()['canonicalId']
 
-    def get_user_orgs(self,domino_api_key):
+    def get_user_orgs(self,headers):
+        print('TTTTTTTTTT')
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
 
         url = f'{domino_host}/v4/organizations/self'
-
+        print(url)
+        print(headers)
         resp = requests.get(url,
-                            headers={'X-Domino-Api-Key': domino_api_key})
+                            headers=headers)
         lst = []
 
         if (resp.status_code == 200):
             for org in resp.json():
                 lst.append(org['name'])
+        print(lst)
         return lst
 
-    def get_user_roles(self,domino_api_key):
+    def get_user_roles(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
 
         url = f'{domino_host}/api/organizations/v1/organizations'
 
         resp = requests.get(url,
-                            headers={'X-Domino-Api-Key': domino_api_key})
+                            headers=headers)
 
         if (resp.status_code == 200):
             data = resp.json()
@@ -132,15 +138,14 @@ class AWSUtils:
                 lst.append(o['name'])
         return lst
 
-    def is_user_admin(self,domino_api_key):
+    def is_user_admin(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
         url = f'{domino_host}/v4/auth/principal'
 
         resp = requests.get(url,
-                            headers={'X-Domino-Api-Key': domino_api_key})
+                            headers=headers)
 
         if (resp.status_code == 200):
-            print(resp.json())
             return resp.json()['isAdmin']
 
     def _is_service_account_mapped(self,trust_policy,service_account,oidc_provider):
@@ -148,14 +153,15 @@ class AWSUtils:
         print(trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"])
         return service_account in trust_policy['Statement'][0]['Condition']['StringLike'][f"{oidc_provider}:sub"]
 
-    def map_iam_roles_to_pod(self,platform_ns,compute_ns,oidc_provier_arn,oidc_audience,role_names,pod_svc_account):
+    def map_iam_roles_to_pod(self,platform_ns,oidc_provier_arn,role_names,pod_svc_account):
         #service_account = f"*:{compute_ns}:{pod_svc_account}"
         service_account = '*'+pod_svc_account[4:]
-        print(pod_svc_account)
+        logging.debug(pod_svc_account)
         resource_role_to_eks_role_mapping = self.get_resource_role_to_eks_role_mapping(platform_ns)
         for role_name in role_names:
             eks_arn = resource_role_to_eks_role_mapping[role_name]
             eks_role_name = eks_arn[eks_arn.index("/")+1:]
+
             response = self._iam.get_role(RoleName=eks_role_name)
             trust_policy = response['Role']['AssumeRolePolicyDocument']
             oidc_provider = oidc_provier_arn[oidc_provier_arn.index("/") + 1:]
@@ -172,8 +178,10 @@ class AWSUtils:
                 self._iam.update_assume_role_policy(RoleName=eks_role_name,PolicyDocument=json.dumps(trust_policy))
             else:
                 print('already there')
-    def get_pod_service_account(self,domino_api_key, run_id, pod_namespace=DEFAULT_COMPUTE_NS):
-        user_id = self.get_user_id(domino_api_key)
+    def get_pod_service_account(self,headers, run_id, pod_namespace=DEFAULT_COMPUTE_NS):
+        logger.debug(headers)
+        logger.debug(run_id)
+        user_id = self.get_user_id(headers)
         try:
             config.load_incluster_config()
         except:
@@ -195,9 +203,10 @@ class AWSUtils:
                         return p.spec.service_account
         return None
 
-    def get_user_id(self,domino_api_key):
+    def get_user_id(self,headers):
         domino_host = os.environ.get('DOMINO_USER_HOST', 'http://nucleus-frontend.domino-platform:80')
         resp = requests.get(f'{domino_host}/v4/auth/principal',
-                            headers={'X-Domino-Api-Key': domino_api_key})
+                            headers=headers)
         if (resp.status_code == 200):
             return resp.json()['canonicalId']
+

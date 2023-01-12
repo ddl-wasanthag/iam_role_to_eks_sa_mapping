@@ -5,7 +5,7 @@ echo "USAGE: ./destroy.sh"
 platform_namespace="${platform_namespace:-domino-platform}"
 compute_namespace="${compute_namespace:-domino-compute}"
 deployment_name="iam-sa-mapping"
-secret="${name}-webhook-certs"
+secret="${deployment_name}-webhook-certs"
 service="${deployment_name}-svc"
 
 kubectl delete secret ${secret} -n ${platform_namespace}
