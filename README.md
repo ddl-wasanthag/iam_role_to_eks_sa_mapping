@@ -36,6 +36,95 @@ for key in s3_client.list_objects(Bucket=bucket_name)['Contents']:
 This approach cannot be used when the EKS Account Id and the account id where the AWS Roles are hosted are different. In 
 that case the `AWS_CONFIG` file approach shown earlier is the only usable approach.
 
+The following diagram shows how the full process works-
+![How Irsa Works](assets/irsa_2.png)
+
+The EKS is already started while pointing to the OIDC Identity Provider
+
+The webhook identity leverages the Service Account Token Volume Projection feature, 
+which provides a pod with a newly created JWT that contains a specified audience and expiration. The cluster will
+automatically rotate and update this token for as long as the pod is running.
+To use this capability, you have to configure the Kube API server with the following flags:
+
+--service-account-issuer - the issuer name for the cluster (this is typically a full URI for the issuer)
+--service-account-signing-key-file - a private key to be used when signing the JWTs
+--service-account-api-audiences - a list of audiences allowed to be specified in projected volumes. These also serve as defaults if no specific audience is indicated in mount config.
+Note: It is important to remember that there are now two different types of SA tokens and each have a different 
+structure! If you use or consume SA tokens, be sure you're using the expected type!
+
+Once configured, pods can specify a projected volume and specify the expiration time (in seconds). 
+Note that the `domsed` webhook does this part automatically for you by mutating your pod when it is being created. 
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-iam-pod
+spec:
+  containers:
+  - image: nginx
+    name: nginx
+    volumeMounts:
+    - mountPath: /var/run/secrets/tokens
+      name: aws-iam-token
+  serviceAccountName: hello-world-app
+  volumes:
+  - name: aws-iam-token
+    projected:
+      sources:
+      - serviceAccountToken:
+          path: aws-iam-token
+          expirationSeconds: 7200
+          audience: aws-iam
+```
+
+For comparison the default K8s service account (which is not mounted in Domino pods) looks like this-
+```json
+{
+  "iss": "kubernetes/serviceaccount",
+  "kubernetes.io/serviceaccount/namespace": "default",
+  "kubernetes.io/serviceaccount/secret.name": "default-token-x4sjk",
+  "kubernetes.io/serviceaccount/service-account.name": "default",
+  "kubernetes.io/serviceaccount/service-account.uid": "488d395f-34b0-4aab-871d-17087fc027f7",
+  "sub": "system:serviceaccount:default:default"
+}
+```
+
+Note the issuer is k8s cluster and it has no expiration data. It is used to access the kube-api server. 
+
+The projected service account in comparison looks like this-
+```json
+{
+  "aud": [
+    "sts.amazonaws.com"
+  ],
+  "exp": 1674755267,
+  "iat": 1674668867,
+  "iss": "https://oidc.eks.eu-west-1.amazonaws.com/id/F4584A4B6D2265099906FC80AF564B16",
+  "kubernetes.io": {
+    "namespace": "domino-compute",
+    "pod": {
+      "name": "run-63d16b3ebe3729589c5bd9d8-mwlc2",
+      "uid": "210cd280-1fe8-41ef-af96-53af291fccea"
+    },
+    "serviceaccount": {
+      "name": "run-63d16b3ebe3729589c5bd9d8",
+      "uid": "314ffbf4-d847-4680-bbf9-e521aabe86a7"
+    }
+  },
+  "nbf": 1674668867,
+  "sub": "system:serviceaccount:domino-compute:run-63d16b3ebe3729589c5bd9d8"
+}
+```
+
+Note that this JWT has a issuer which is the OIDC Provider associated with the EKS cluster and trusted by IAM, it has a
+`sub` field which identifies the service-account of the pod. It also has an expiry time associated with it.
+
+The AWS clients (cli or boto3) will use this token encapsuated in the environment variable `AWS_WEB_IDENTITY_TOKEN_FILE`
+to request a `assume-role` on a specific AWS role. This request will succeed if, the underlying AWS role has trust 
+policy a condition which permits sts calls of there is a `aud` and `sub` field with matching values from the jwt above.
+
+![Architecture Overview](assets/irsa.png)
+
 ## Installation
 
 In this document we will refer to two types of AWS Accounts
