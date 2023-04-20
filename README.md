@@ -45,10 +45,11 @@ The webhook identity leverages the Service Account Token Volume Projection featu
 which provides a pod with a newly created JWT that contains a specified audience and expiration. The cluster will
 automatically rotate and update this token for as long as the pod is running.
 To use this capability, you have to configure the Kube API server with the following flags:
-
+```
 --service-account-issuer - the issuer name for the cluster (this is typically a full URI for the issuer)
 --service-account-signing-key-file - a private key to be used when signing the JWTs
 --service-account-api-audiences - a list of audiences allowed to be specified in projected volumes. These also serve as defaults if no specific audience is indicated in mount config.
+```
 Note: It is important to remember that there are now two different types of SA tokens and each have a different 
 structure! If you use or consume SA tokens, be sure you're using the expected type!
 
