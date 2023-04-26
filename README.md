@@ -384,6 +384,12 @@ metadata:
   name: aws-iam-to-sa-mapping
 rules:
 - labelSelectors:
+  - app.kubernetes.io/name in (spark,ray,dask)
+  matchBuilds: false
+  modifyLabel:
+    key: dominodatalab.com/workload-type
+    value: cluster
+- labelSelectors:
   - "dominodatalab.com/workload-type in (Workspace,Job)"
   modifySecurityContext:
     context:
